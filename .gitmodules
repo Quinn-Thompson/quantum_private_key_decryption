@@ -1,0 +1,3 @@
+[submodule "quantum_visualization"]
+	path = quantum_visualization
+	url = https://github.com/Quinn-Thompson/quantum_visualization.git
