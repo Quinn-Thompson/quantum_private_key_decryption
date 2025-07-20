@@ -21,9 +21,9 @@ _PLAINTEXT_QUBITS = 4
 _KEY_QUBITS = 4
 _FLIP_QUBIT = 1
 _NUMBER_OF_QUBITS = _PLAINTEXT_QUBITS + _KEY_QUBITS + _FLIP_QUBIT
-_NUMBER_OF_FRAMES = 100
+_NUMBER_OF_FRAMES = 33
 _QUBIT_HILBERT_SPACE = 2
-_INPUT_KEY = [0, 1, 1, 1]
+_INPUT_KEY = [0, 1, 1, 0]
 _INPUT_PLAINTEXT = [1, 0, 1, 0]
 _GROVER_ITERATIONS = 2
 
@@ -64,13 +64,11 @@ def get_eigen_bloch_vector(eigen_vectors):
     bloch_vectors = []
     for i in range(_QUBIT_HILBERT_SPACE):
         eigen_vector = eigen_vectors[:, i]
-        
-        # Convert to statevector
+
         function = Statevector(eigen_vector)
         
         operator = np.array([[[0, 1], [1, 0]], [[0, -1j], [1j, 0]], [[1, 0], [0, -1]]])
-        
-        # Get Bloch vector
+
         bloch_vector = np.real(function.data.conj().T @ operator @ function.data)
         bloch_vectors.append(bloch_vector)
     return bloch_vectors
@@ -82,34 +80,6 @@ def append_matrices(matrices: QubitMatrices, matrix_to_add, qubit_number):
     bloch_vectors = get_eigen_bloch_vector(eigen_vectors)
     matrices.mixed_matrices_1[qubit_number].append(bloch_vectors[0])
     matrices.mixed_matrices_2[qubit_number].append(bloch_vectors[1])
-
-
-def unitary_to_bloch_angles(U):
-    # Normalize (remove global phase)
-    U = U / np.sqrt(np.linalg.det(U))
-
-    # Get rotation angle
-    trace = np.trace(U)
-    angle = 2 * np.arccos(np.clip(np.real(trace) / 2, -1, 1))
-
-    if np.isclose(angle, 0):
-        return 0, 0, 0  # No rotation
-
-    # Extract axis components
-    sin_half = np.sin(angle / 2)
-    n_x = np.imag(U[0,1] + U[1,0]) / (2 * sin_half)
-    n_y = np.real(U[1,0] - U[0,1]) / (2 * sin_half)
-    n_z = np.imag(U[0,0] - U[1,1]) / (2 * sin_half)
-
-    # Normalize axis
-    n = np.array([n_x, n_y, n_z])
-    n = n / np.linalg.norm(n)
-
-    # Convert axis to spherical angles
-    theta = np.arccos(n[2])          # polar angle
-    phi = np.arctan2(n[1], n[0])     # azimuthal angle
-
-    return angle, theta, phi
 
 class bloch_spheres():
     def __init__(self, init_matrices: List[NDArray[np.float64]], number_of_qubits: int):
@@ -139,30 +109,26 @@ class bloch_spheres():
         return v / np.linalg.norm(v)
 
     def rotation_slerp(self, start_matrix, end_matrix, t):
+        # written by chatGPT, needs to be reworked to utilize a half transform for correct rotations
         start_matrix = start_matrix / np.linalg.norm(start_matrix)
         end_matrix = end_matrix / np.linalg.norm(end_matrix)
         dot = np.dot(start_matrix, end_matrix)
 
         if np.isclose(dot, 1.0):
-            return start_matrix  # no rotation needed
+            return start_matrix 
         elif np.isclose(dot, -1.0):
-            # 180° rotation: find arbitrary perpendicular axis
             axis = np.cross(start_matrix, np.array([1, 0, 0]))
             if np.linalg.norm(axis) < 1e-6:
                 axis = np.cross(start_matrix, np.array([0, 1, 0]))
             axis = axis / np.linalg.norm(axis)
             rot = R.from_rotvec(np.pi * axis)
         else:
-            # Rotation from start to end vector
             axis = np.cross(start_matrix, end_matrix)
             axis = axis / np.linalg.norm(axis)
             angle = np.arccos(dot)
             rot = R.from_rotvec(angle * axis)
-
-        # Interpolate from identity to the full rotation
         slerp = Slerp([0, 1], R.concatenate([R.identity(), rot]))
         rot_t = slerp([t])[0]
-        # Apply interpolated rotation to reference vector
         return rot_t.apply(start_matrix)
 
     def update(self, frame: int):
@@ -205,11 +171,11 @@ class bloch_spheres():
             x = np.outer(np.cos(u), np.sin(v))
             y = np.outer(np.sin(u), np.sin(v))
             z = np.outer(np.ones_like(u), np.cos(v))
-            self.axes[qubit_number].plot_wireframe(x, y, z, color='lightblue', alpha=0.1)
+            self.axes[qubit_number].plot_wireframe(x, y, z, color='lightblue', alpha=0.1, zorder=3)
             
-            self.axes[qubit_number].quiver(0, 0, 0, 0.77, 0, 0, color='r', arrow_length_ratio=0.1, alpha=0.3)
-            self.axes[qubit_number].quiver(0, 0, 0, 0, 0.77, 0, color='g', arrow_length_ratio=0.1, alpha=0.3)
-            self.axes[qubit_number].quiver(0, 0, 0, 0, 0, 0.77, color='b', arrow_length_ratio=0.1, alpha=0.3)
+            self.axes[qubit_number].quiver(0, 0, 0, 0.77, 0, 0, color='r', arrow_length_ratio=0.1, alpha=0.3, zorder=2)
+            self.axes[qubit_number].quiver(0, 0, 0, 0, 0.77, 0, color='g', arrow_length_ratio=0.1, alpha=0.3, zorder=2)
+            self.axes[qubit_number].quiver(0, 0, 0, 0, 0, 0.77, color='b', arrow_length_ratio=0.1, alpha=0.3, zorder=2)
 
             # Settings
             self.axes[qubit_number].set_xlim([-1, 1])
@@ -219,6 +185,12 @@ class bloch_spheres():
             self.axes[qubit_number].axis('off')
             
             self.draw_quivers(0, qubit_number)
+            
+            self.axes[qubit_number].text(x=0.0, y=0.0, z=1.2, s='|0⟩', color='black', fontsize=8, zorder=1)
+            self.axes[qubit_number].text(x=0.0, y=0.0, z=-1.4, s='|1⟩', color='black', fontsize=8, zorder=1)
+            self.axes[qubit_number].text(x=0.0, y=1.1, z=0.0, s='y', color='black', fontsize=8, zorder=1)
+            self.axes[qubit_number].text(x=1.1, y=0.0, z=0.0, s='x', color='black', fontsize=8, zorder=1)
+
 
     def draw_quivers(self, matrix_number, qubit_number):
         for field in fields(self.matrices):
@@ -484,7 +456,6 @@ def create_quantum_circuit():
     job = sim.run(compiled_circuit, shots=1024)
     result = job.result()
 
-    # Get counts and print them
     counts = result.get_counts(quantum_circuit)
     print(counts)
     animate_bloch_sphere(bloch_sphere_plots.key_qubits_plots)
