@@ -217,16 +217,6 @@ class BlochSpherePlots():
     plaintext_qubits_plots: bloch_spheres
     key_qubits_plots: bloch_spheres
     flip_qubit_plots: bloch_spheres
-    
-
-
-def bloch_sphere(quantum_state: qiskit.QuantumCircuit):
-    x = 2 * np.real(quantum_state[0, 1])
-    y = 2 * np.imag(quantum_state[1, 0])
-    z = np.real(quantum_state[0, 0] - quantum_state[1, 1])
-    fig = plt.figure()
-    plot_bloch_vector(np.array([x, y, z]), title="Bloch Sphere: |+⟩ state")
-    return fig
 
 def add_to_bloch_spheres(bloch_spheres: bloch_spheres, quantum_circuit: qiskit.QuantumCircuit, register: qiskit.QuantumRegister):
     quantum_vector = Statevector.from_instruction(quantum_circuit)
@@ -241,14 +231,14 @@ def add_to_bloch_spheres(bloch_spheres: bloch_spheres, quantum_circuit: qiskit.Q
         append_matrices(bloch_spheres.matrices, partial_trace_values, qubit_number)
 
 def von_neuman_info(qubit_trace_1, qubit_trace_2, qubit_trace_1_2):
-    # Compute von Neumann entropy
-    S_A = entropy(qubit_trace_1, base=2)
-    S_B = entropy(qubit_trace_2, base=2)
-    S_AB = entropy(qubit_trace_1_2, base=2)
+    # compute von neumon entropy
+    entropy_qubit_1 = entropy(qubit_trace_1, base=2)
+    entropy_qubit_2 = entropy(qubit_trace_2, base=2)
+    entropy_qubits_state = entropy(qubit_trace_1_2, base=2)
 
-    # Quantum mutual information
-    I_AB = (S_A + S_B) - S_AB
-    return I_AB
+    # calculate mutal info
+    mutal_information = (entropy_qubit_1 + entropy_qubit_2) - entropy_qubits_state
+    return mutal_information
 
 def mutual_entanglement(quantum_circuit: qiskit.QuantumCircuit):
     combination_matrices = np.empty((_NUMBER_OF_QUBITS, _NUMBER_OF_QUBITS), dtype=np.float64)
