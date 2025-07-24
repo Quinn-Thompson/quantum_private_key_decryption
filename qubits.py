@@ -1,12 +1,12 @@
 import numpy as np
-from typing import List
+from typing import List, Literal
 import matplotlib.pyplot as plt
 import qiskit
-from qiskit.quantum_info import Statevector, DensityMatrix, partial_trace, entropy
+from qiskit.quantum_info import Statevector, DensityMatrix, partial_trace
 from qiskit_aer import Aer
-from matplotlib.animation import FuncAnimation
+
 from dataclasses import dataclass, fields
-from quantum_visualization.visualize_qubits import bloch_spheres, append_matrices
+from quantum_visualization.visualize_qubits import BlochSpheres, BlochProperties
 
 
 _ANCILARY_QUBITS = 1
@@ -31,174 +31,124 @@ class QubitRegisters():
 
 @dataclass
 class BlochSpherePlots():
-    plaintext_qubits_plots: bloch_spheres
-    key_qubits_plots: bloch_spheres
-    flip_qubit_plots: bloch_spheres
+    plaintext_qubits_plots: BlochSpheres
+    key_qubits_plots: BlochSpheres
+    flip_qubit_plots: BlochSpheres
 
-def add_to_bloch_spheres(bloch_spheres: bloch_spheres, quantum_circuit: qiskit.QuantumCircuit, register: qiskit.QuantumRegister):
-    quantum_vector = Statevector.from_instruction(quantum_circuit)
-    qubits_in_register = [quantum_circuit.qubits.index(qubit) for qubit in register]
-    keep_indices = [qubit for qubit in list(range(len(quantum_circuit.qubits))) if qubit not in qubits_in_register]
-    reduced_state_vector = partial_trace(quantum_vector, keep_indices)
-    for qubit_number in range(len(qubits_in_register)): 
-        qubit_trace = [qubit for qubit in list(range(len(qubits_in_register)))]
-        qubit_trace.remove(qubit_number)
-        partial_trace_values = partial_trace(DensityMatrix(reduced_state_vector), qubit_trace).data
-        
-        append_matrices(bloch_spheres.matrices, partial_trace_values, qubit_number)
-
-def von_neuman_info(qubit_trace_1, qubit_trace_2, qubit_trace_1_2):
-    # compute von neumon entropy
-    entropy_qubit_1 = entropy(qubit_trace_1, base=2)
-    entropy_qubit_2 = entropy(qubit_trace_2, base=2)
-    entropy_qubits_state = entropy(qubit_trace_1_2, base=2)
-
-    # calculate mutal info
-    mutal_information = (entropy_qubit_1 + entropy_qubit_2) - entropy_qubits_state
-    return mutal_information
-
-def mutual_entanglement(quantum_circuit: qiskit.QuantumCircuit):
-    combination_matrices = np.empty((_NUMBER_OF_QUBITS, _NUMBER_OF_QUBITS), dtype=np.float64)
-    density_matrix = DensityMatrix.from_instruction(quantum_circuit).data
-    for qubit_number_1 in range(_NUMBER_OF_QUBITS):
-        combination_qubit = list(range(_NUMBER_OF_QUBITS))
-        qubit_trace_1 = list(range(_NUMBER_OF_QUBITS))
-        qubit_trace_1.remove(qubit_number_1)
-        combination_qubit.remove(qubit_number_1)
-        for qubit_number_2 in range(_NUMBER_OF_QUBITS):
-            if qubit_number_1 == qubit_number_2:
-                continue
-            qubit_trace_2 = list(range(_NUMBER_OF_QUBITS))
-            qubit_trace_2.remove(qubit_number_2)
-            combination_qubit.remove(qubit_number_2)
-            von_neuman = von_neuman_info(
-                partial_trace(density_matrix, qubit_trace_1).data, 
-                partial_trace(density_matrix, qubit_trace_2).data, 
-                partial_trace(density_matrix, combination_qubit).data, 
-            )
-            combination_matrices[qubit_number_1, qubit_number_2] = von_neuman
-    print(combination_matrices)
-
-def animate_bloch_sphere(bloch_spheres: bloch_spheres):
-    number_of_frames = (len(bloch_spheres.matrices.state_matrices[0])-1)*_NUMBER_OF_FRAMES
-    def update(frame):
-        frame = frame % _NUMBER_OF_FRAMES
-        bloch_spheres.update(frame)
-        if frame == number_of_frames-1:
-            plt.close(bloch_spheres.figure)
-
-    _ = FuncAnimation(bloch_spheres.figure, update, frames=number_of_frames, interval=5, blit=False, repeat=False)
-    plt.show()
-
-def aes_step(quantum_circuit: qiskit.QuantumCircuit, qubit_registers: QubitRegisters, bloch_sphere_plots: BlochSpherePlots):
+def aes_step(quantum_circuit: qiskit.QuantumCircuit, qubit_registers: QubitRegisters, bloch_spheres: BlochSpheres):
     # integrate key into plaintext encryption
     # this is the round key step
     for i in range(_KEY_QUBITS):
         quantum_circuit.cx(qubit_registers.key_qubits[i], qubit_registers.plaintext_qubits[i])
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="round key"))
     # some nonlinear substritution step
     # reversable tofolli gate, where 110 = 111, 111= 110
     quantum_circuit.ccx(qubit_registers.plaintext_qubits[0], qubit_registers.plaintext_qubits[1], qubit_registers.plaintext_qubits[2])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="ccx"))
 
     quantum_circuit.cx(qubit_registers.plaintext_qubits[0], qubit_registers.plaintext_qubits[1])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="cx"))
     quantum_circuit.ccx(qubit_registers.plaintext_qubits[1], qubit_registers.plaintext_qubits[0], qubit_registers.plaintext_qubits[3])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="ccx"))
     
     # swap qubit 1 and 3, is basically shiftrow
     quantum_circuit.swap(qubit_registers.plaintext_qubits[2], qubit_registers.plaintext_qubits[3])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="swap"))
 
-def aes_step_inverse(quantum_circuit: qiskit.QuantumCircuit, qubit_registers: QubitRegisters, bloch_sphere_plots: BlochSpherePlots):
+def aes_step_inverse(quantum_circuit: qiskit.QuantumCircuit, qubit_registers: QubitRegisters, bloch_spheres: BlochSpheres):
     # swap qubit 1 and 3, is basically shiftrow
     quantum_circuit.swap(qubit_registers.plaintext_qubits[2], qubit_registers.plaintext_qubits[3])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="swap"))
     
     # some nonlinear substritution step
     # reversable tofolli gate, where 110 = 111, 111= 110
 
     quantum_circuit.ccx(qubit_registers.plaintext_qubits[1], qubit_registers.plaintext_qubits[0], qubit_registers.plaintext_qubits[3])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="ccx"))
     
     quantum_circuit.cx(qubit_registers.plaintext_qubits[0], qubit_registers.plaintext_qubits[1])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="cx"))
+    
     quantum_circuit.ccx(qubit_registers.plaintext_qubits[0], qubit_registers.plaintext_qubits[1], qubit_registers.plaintext_qubits[2])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
-    # integrate key into plaintext encryption
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="ccx"))
+        # integrate key into plaintext encryption
     # this is the round key step
     for i in range(_KEY_QUBITS):
         quantum_circuit.cx(qubit_registers.key_qubits[i], qubit_registers.plaintext_qubits[i])
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
-
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="round key"))
+    
 def aes_circuit(
     quantum_circuit: qiskit.QuantumCircuit, 
     qubit_registers: QubitRegisters, 
-    bloch_sphere_plots: BlochSpherePlots,
+    bloch_spheres: BlochSpheres,
     classical_output: qiskit.ClassicalRegister,
     target_cipher: bytes
 ):
     for cipher_index, bit in enumerate(_INPUT_PLAINTEXT):
         if bit == 1:
             quantum_circuit.x(qubit_registers.plaintext_qubits[cipher_index])
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="setup plaintext"))
 
     # entangle all qubits so they have the same probability
     quantum_circuit.h(qubit_registers.key_qubits)
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
-    # iplace the flag qubit into a state where it can easily flip
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="super position"))
+        # iplace the flag qubit into a state where it can easily flip
     quantum_circuit.x(qubit_registers.flip_qubit)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="flip"))
     quantum_circuit.h(qubit_registers.flip_qubit)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="superposition flip"))
     
     for _ in range(_GROVER_ITERATIONS):
-        oracle_find_matching_states(quantum_circuit, qubit_registers, bloch_sphere_plots, target_cipher)
-        grover_diffuser(quantum_circuit, qubit_registers, bloch_sphere_plots)
+        oracle_find_matching_states(quantum_circuit, qubit_registers, bloch_spheres, target_cipher)
+        grover_diffuser(quantum_circuit, qubit_registers, bloch_spheres)
     
     quantum_circuit.measure(qubit_registers.key_qubits, classical_output)
     
-def oracle_find_matching_states(quantum_circuit: qiskit.QuantumCircuit, qubit_registers: QubitRegisters, bloch_sphere_plots: BlochSpherePlots, target_ciper: List[int]):
+def oracle_find_matching_states(quantum_circuit: qiskit.QuantumCircuit, qubit_registers: QubitRegisters, bloch_spheres: BlochSpheres, target_ciper: List[int]):
     # encrypt the plaintext 
-    aes_step(quantum_circuit, qubit_registers, bloch_sphere_plots)
+    aes_step(quantum_circuit, qubit_registers, bloch_spheres)
     
     # affect control bits so they are all 1s for MCX
     for cipher_index, bit in enumerate(target_ciper):
         if bit == 0:
             quantum_circuit.x(qubit_registers.plaintext_qubits[cipher_index])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
-
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="impose cipher on plaintext"))
+    
     # based on affect of the target cipher on the paintext, if the sets are all 1, flip the output qubit
     quantum_circuit.mcx(qubit_registers.plaintext_qubits, qubit_registers.flip_qubit)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="flip qubit"))
 
     # reverse the change of the cipher onto the plaintext
     for cipher_index, bit in enumerate(target_ciper):
         if bit == 0:
             quantum_circuit.x(qubit_registers.plaintext_qubits[cipher_index])
-    add_to_bloch_spheres(bloch_sphere_plots.plaintext_qubits_plots, quantum_circuit, qubit_registers.plaintext_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="unimpose cipher on plaintext"))
 
     # unencrypt the plaintext
-    aes_step_inverse(quantum_circuit, qubit_registers, bloch_sphere_plots)
+    aes_step_inverse(quantum_circuit, qubit_registers, bloch_spheres)
 
-def grover_diffuser(quantum_circuit: qiskit.QuantumCircuit, qubit_registers: QubitRegisters, bloch_sphere_plots: BlochSpherePlots):
+def grover_diffuser(quantum_circuit: qiskit.QuantumCircuit, qubit_registers: QubitRegisters, bloch_spheres: BlochSpheres):
     # reflect the amplitude over the average so matching items probabilities gain amplitude
     
     quantum_circuit.h(qubit_registers.key_qubits)
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="superposition"))
     # invert over the x axis
     quantum_circuit.x(qubit_registers.key_qubits)
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="invert keys"))
     # apply another hammond on the last key so we can phase flip all bits
     quantum_circuit.h(qubit_registers.key_qubits[-1])
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="hernand last qubit"))
     # flip the phase of all bits relative to the last key
     quantum_circuit.mcx(qubit_registers.key_qubits[:-1], qubit_registers.key_qubits[-1])
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="flip all qubits"))
     # match the state of the last key to the rest
     quantum_circuit.h(qubit_registers.key_qubits[-1])
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="unhernand last qubit"))
     # move from the real states to the phase states
     quantum_circuit.x(qubit_registers.key_qubits)
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="revert keys"))
     quantum_circuit.h(qubit_registers.key_qubits)
-    add_to_bloch_spheres(bloch_sphere_plots.key_qubits_plots, quantum_circuit, qubit_registers.key_qubits)
+    bloch_spheres.add_circuit_state(quantum_circuit, BlochProperties(plot_name="de-superposition"))
 
 def ccx_operation(acting_bits: bytes, acting_bit_0, acting_bit_1, target_bit, target_bits = None):
     if target_bits is None:
@@ -235,28 +185,13 @@ def create_quantum_circuit():
         classical_output
     )
 
-    
-    quantum_vector = Statevector.from_instruction(quantum_circuit)
-    bloch_sphere_dict = {}
-    for field in fields(qubit_registers):
-        name = field.name
-        register = getattr(qubit_registers, name)
-        qubits_in_register = [quantum_circuit.qubits.index(qubit) for qubit in register]
-        initial_matrices = []
-        keep_indices = [qubit for qubit in list(range(len(quantum_circuit.qubits))) if qubit not in qubits_in_register]
-        reduced_state_vector = partial_trace(quantum_vector, keep_indices)
-        for qubit_number in range(len(qubits_in_register)): 
-            qubit_trace = [qubit for qubit in list(range(len(qubits_in_register)))]
-            qubit_trace.remove(qubit_number)
-            initial_matrices.append(partial_trace(DensityMatrix(reduced_state_vector), qubit_trace).data)
-            
-        bloch_sphere_dict[f"{name}_plots"] = bloch_spheres(initial_matrices, len(qubits_in_register))
     cipher_text = aes_ecnryption(_INPUT_PLAINTEXT, _INPUT_KEY)
     print(_INPUT_KEY)
-    bloch_sphere_plots = BlochSpherePlots(**bloch_sphere_dict)
+    bloch_spheres = BlochSpheres(quantum_circuit, 50, BlochProperties(plot_name="Initialized"))
+
 
     # Hadamard gate
-    aes_circuit(quantum_circuit, qubit_registers, bloch_sphere_plots, classical_output, cipher_text)
+    aes_circuit(quantum_circuit, qubit_registers, bloch_spheres, classical_output, cipher_text)
     # mutual_entanglement(quantum_circuit)
     sim = Aer.get_backend('aer_simulator')
     compiled_circuit = qiskit.transpile(quantum_circuit, sim)
@@ -265,8 +200,8 @@ def create_quantum_circuit():
 
     counts = result.get_counts(quantum_circuit)
     print(counts)
-    animate_bloch_sphere(bloch_sphere_plots.key_qubits_plots)
-    # animate_bloch_sphere(bloch_sphere_plots.plaintext_qubits_plots)
+    bloch_spheres.animate_bloch_sphere()
+
 
 
 def main():
