@@ -380,11 +380,11 @@ def create_shors_circuit():
     print(counts)
 
     for measure in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:3]:
-        measured_int = int(measure[0], 2)  # 5
-        phase = measured_int / 2**3      # 0.3125
-        frac = Fraction(phase).limit_denominator(product_of_primes)  # 5/16 ≈ 1/4
-        r = frac.denominator              # 4
-        # Check:
+        # implemented by chatgpt
+        measured_int = int(measure[0], 2)
+        phase = measured_int / 2**3
+        frac = Fraction(phase).limit_denominator(product_of_primes)
+        r = frac.denominator
         if pow(coprime, r, product_of_primes) == 1:
             x = pow(coprime, r // 2, product_of_primes)
             factors = [math.gcd(x - 1, product_of_primes), math.gcd(x + 1, product_of_primes)]
