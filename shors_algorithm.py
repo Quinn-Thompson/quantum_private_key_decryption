@@ -10,13 +10,14 @@ import math
 import time
 from fractions import Fraction
 from qiskit.visualization import plot_histogram
+from copy import deepcopy
 
 from quantum_visualization.gui_backend.sub_backend.visualize_qubits import DisplayProperties
 from quantum_visualization.gui_backend.main_backend import QuantumCircuitWindow
 
 _FUNDAMENTAL_BASIS = 4
 
-_COUNTING_QUBITS = 6
+_COUNTING_QUBITS = 6 # should be 2N, but can cause bloat
 _MULTIPLIER_REGISTER = _FUNDAMENTAL_BASIS
 _LEFT_OPERAND_REGISTER = _FUNDAMENTAL_BASIS
 _RIGHT_OPERAND_REGISTER = _FUNDAMENTAL_BASIS+1
@@ -58,7 +59,14 @@ class ModulatedAdderRegisters():
     carry_qubits: qiskit.QuantumRegister
     temporary_qubits: qiskit.QuantumRegister
     control_qubit: qiskit.QuantumRegister
-    
+
+    def __iter__(self) -> Iterable[Qubit]:
+        return iter(
+            list(self.left_operand_qubits) 
+            + list(self.right_operand_qubits) 
+            + list(self.carry_qubits) 
+        )
+
 @dataclass
 class ControlModMultRegisters():
     left_operand_qubits: qiskit.QuantumRegister
@@ -68,6 +76,15 @@ class ControlModMultRegisters():
     control_qubit: qiskit.QuantumRegister
     multiplier_qubits: qiskit.QuantumRegister
     application_qubit: qiskit.QuantumRegister
+    
+    def __iter__(self) -> Iterable[Qubit]:
+        return iter(
+            list(self.left_operand_qubits) 
+            + list(self.right_operand_qubits) 
+            + list(self.carry_qubits) 
+            + list(self.temporary_qubits) 
+            + list(self.control_qubit) 
+        )
 
 @dataclass
 class ModularExponentiationRegisters():
@@ -113,8 +130,8 @@ def sum_gate(invert: bool = False):
     carry_circuit = qiskit.QuantumCircuit(3, name="sum_gate")
     # this is for checking what the actual output of the addition is
     gates = [
-        partial(carry_circuit.cx, 0, 2), 
         partial(carry_circuit.cx, 1, 2), 
+        partial(carry_circuit.cx, 0, 2), 
     ]
     if invert:
         gates.reverse()
@@ -138,12 +155,13 @@ def adder_gate(invert: bool = False):
     # then the sum is handled and the carry transformations are undone, so that the right operand becomes a+b
     gates = []
     for location in range(_FUNDAMENTAL_BASIS-1):
-        gates.append(partial(adder_circuit.append, carry_gate(), [adder_registers.carry_qubits[location], adder_registers.left_operand_qubits[location], adder_registers.right_operand_qubits[location], adder_registers.carry_qubits[location+1]])), 
+        gates.append(partial(adder_circuit.append, carry_gate(invert), [adder_registers.carry_qubits[location], adder_registers.left_operand_qubits[location], adder_registers.right_operand_qubits[location], adder_registers.carry_qubits[location+1]])), 
+    gates.append(partial(adder_circuit.append, carry_gate(invert), [adder_registers.carry_qubits[_FUNDAMENTAL_BASIS-1], adder_registers.left_operand_qubits[_FUNDAMENTAL_BASIS-1], adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1], adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS]])), 
     gates.append(partial(adder_circuit.cx, adder_registers.left_operand_qubits[_FUNDAMENTAL_BASIS-1], adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1]))
     for location in range(_FUNDAMENTAL_BASIS-1, 0, -1):
-        gates.append(partial(adder_circuit.append, sum_gate(), [adder_registers.carry_qubits[location], adder_registers.left_operand_qubits[location], adder_registers.right_operand_qubits[location]])), 
-        gates.append(partial(adder_circuit.append, carry_gate(), [adder_registers.carry_qubits[location-1], adder_registers.left_operand_qubits[location-1], adder_registers.right_operand_qubits[location-1], adder_registers.carry_qubits[location]])), 
-    gates.append(partial(adder_circuit.append, sum_gate(), [adder_registers.carry_qubits[0], adder_registers.left_operand_qubits[0], adder_registers.right_operand_qubits[0]])), 
+        gates.append(partial(adder_circuit.append, sum_gate(invert), [adder_registers.carry_qubits[location], adder_registers.left_operand_qubits[location], adder_registers.right_operand_qubits[location]])), 
+        gates.append(partial(adder_circuit.append, carry_gate(not invert), [adder_registers.carry_qubits[location-1], adder_registers.left_operand_qubits[location-1], adder_registers.right_operand_qubits[location-1], adder_registers.carry_qubits[location]])), 
+    gates.append(partial(adder_circuit.append, sum_gate(invert), [adder_registers.carry_qubits[0], adder_registers.left_operand_qubits[0], adder_registers.right_operand_qubits[0]])), 
 
     
     if invert:
@@ -156,7 +174,7 @@ def adder_gate(invert: bool = False):
     custom_gate.label = f"Adder{'†' if invert else ''}"
     return custom_gate
 
-def modulated_adder_gate(classical_modulated_value: int):
+def modulated_adder_gate(classical_modulated_value: int, invert: bool=False):
     modulated_adder_registers = ModulatedAdderRegisters(
         left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="left_operand_qubits"),
         right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="right_operand_qubits"),
@@ -173,54 +191,69 @@ def modulated_adder_gate(classical_modulated_value: int):
         modulated_adder_registers.control_qubit,
         name="modulated_adder_gate"
     )
-    # enact the adder, and swap the left operand gate with a temporary register to hold it
-    # this provides us with b+a for output, now the a register has N
-    # when the reverse adder is utilized, N is removed from a+b, making a+b-N
-    # The rollover qubit on b register is the sign of the new a+b-N
-    # if this bit is 0, then control qubit is flipped to 1
-    # then, because N is defined as the modular value, the cx gates will zero out the effect of N
-    # if the control is 0, then N is reintroduced into the negative, to produce an additive 
-    # to get a+b mod N
-    
     # the last two adders are just to uncompute the control qubit
+    
+    # a+b
     gates = [
-        partial(mod_adder_circuit.append, adder_gate(), list(modulated_adder_registers.left_operand_qubits) + list(modulated_adder_registers.right_operand_qubits) + list(modulated_adder_registers.carry_qubits)), 
+        partial(mod_adder_circuit.append, adder_gate(invert), list(modulated_adder_registers))
     ]
+    # a is now N, and N is now a
+    swap_gates = []
     for location in range(_FUNDAMENTAL_BASIS):
         gates.append(partial(mod_adder_circuit.swap, modulated_adder_registers.temporary_qubits[location], modulated_adder_registers.left_operand_qubits[location]))
+        swap_gates.append(gates[-1])
+    # subtract N from (a+b), because a < N and b < N from being factored in by N, 
+    # a + b - N will never falsely trigger the overflow qubit
+    # as such, if the overflow is zero after subtraction, then the value a + b - N is positive
+    # thus it is the end result from modulation
+    # however if the overflow is 1, then we have dipped into 2's complement, so we must add N back
+    # to modulate
     gates.extend(
         [
-            partial(mod_adder_circuit.append, adder_gate(invert=True), list(modulated_adder_registers.left_operand_qubits) + list(modulated_adder_registers.right_operand_qubits) + list(modulated_adder_registers.carry_qubits)), 
-            partial(mod_adder_circuit.x, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1]),
-            partial(mod_adder_circuit.cx, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1], modulated_adder_registers.control_qubit[0]),
-            partial(mod_adder_circuit.x, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1]),
+            partial(mod_adder_circuit.append, adder_gate(not invert), list(modulated_adder_registers)), 
+            partial(mod_adder_circuit.x, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS]),
+            partial(mod_adder_circuit.cx, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS], modulated_adder_registers.control_qubit[0]),
+            partial(mod_adder_circuit.x, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS]),
         ]
     )
-
-    for location, bit in enumerate(format(classical_modulated_value, f"0{_FUNDAMENTAL_BASIS}b")):
+    # zero out N bits if control qubit is 1
+    zero_gates = []
+    modulation_bits: str = "".join(reversed(format(classical_modulated_value, f"0{_FUNDAMENTAL_BASIS}b"))) 
+    for location, bit in enumerate(modulation_bits):
         if bit == "1":
             gates.append(partial(mod_adder_circuit.cx, modulated_adder_registers.control_qubit[0], modulated_adder_registers.left_operand_qubits[location]))
+            zero_gates.append(gates[-1])
+    
+    # add N back in if it hasn't been zerod out
     gates.append(
-        partial(mod_adder_circuit.append, adder_gate(), list(modulated_adder_registers.left_operand_qubits) + list(modulated_adder_registers.right_operand_qubits) + list(modulated_adder_registers.carry_qubits)), 
-    )
-    for location, bit in enumerate(reversed(format(classical_modulated_value, f"0{_FUNDAMENTAL_BASIS}b"))):
-        if bit == "1":
-            gates.append(partial(mod_adder_circuit.cx, modulated_adder_registers.control_qubit[0], modulated_adder_registers.left_operand_qubits[location]))
-    
-    for location in range(_FUNDAMENTAL_BASIS):
-        gates.append(partial(mod_adder_circuit.swap, modulated_adder_registers.temporary_qubits[location], modulated_adder_registers.left_operand_qubits[location]))
-
-    gates.extend([
-        partial(mod_adder_circuit.append, adder_gate(invert=True), list(modulated_adder_registers.left_operand_qubits) + list(modulated_adder_registers.right_operand_qubits) + list(modulated_adder_registers.carry_qubits)), 
-        partial(mod_adder_circuit.cx, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1], modulated_adder_registers.control_qubit[0]),
-        partial(mod_adder_circuit.append, adder_gate(), list(modulated_adder_registers.left_operand_qubits) + list(modulated_adder_registers.right_operand_qubits) + list(modulated_adder_registers.carry_qubits)), 
-    ]
+        partial(mod_adder_circuit.append, adder_gate(invert), list(modulated_adder_registers)), 
     )
     
+    # reset the N bits
+    zero_gates.reverse()
+    gates.extend(zero_gates)
+    
+    # swap N back to N register, and a back to a register
+    swap_gates.reverse()
+    gates.extend(swap_gates)
+    
+    # block 2, used just to reset the control qubit
+    gates.extend(
+        [
+            partial(mod_adder_circuit.append, adder_gate(not invert), list(modulated_adder_registers)), 
+            partial(mod_adder_circuit.cx, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS], modulated_adder_registers.control_qubit[0]),
+            partial(mod_adder_circuit.append, adder_gate(invert), list(modulated_adder_registers)), 
+        ]
+    )
+    
+    if invert:
+        gates.reverse()
+        
     for gate in gates:
         gate()
         
     custom_gate = mod_adder_circuit.to_gate()
+    custom_gate.label = f"ModAdder{'†' if invert else ''}"
     return custom_gate
 
 def controlled_mod_mult_gate(classical_modulated_value: int, classical_base_value: int, invert: bool=False):
@@ -249,16 +282,20 @@ def controlled_mod_mult_gate(classical_modulated_value: int, classical_base_valu
     # in this case, the modular multiplication is used because z 
     gates = []
     for exponent in range(_FUNDAMENTAL_BASIS):
-        for location, bit in enumerate(format((classical_base_value * (2 ** exponent)) % classical_modulated_value, f"0{_FUNDAMENTAL_BASIS}b")):
+        modulated_coprime = classical_base_value * (2 ** exponent) % classical_modulated_value
+        control_gates = []
+        for location, bit in enumerate(reversed(format(modulated_coprime, f"0{_FUNDAMENTAL_BASIS}b"))):
             if bit == "1":
                 gates.append(partial(cntrl_mod_mult_circuit.ccx, cntrl_mod_mult_registers.application_qubit[0], cntrl_mod_mult_registers.multiplier_qubits[exponent], cntrl_mod_mult_registers.left_operand_qubits[location]))
+                control_gates.append(gates[-1])
         
-        gates.append(partial(cntrl_mod_mult_circuit.append, modulated_adder_gate(classical_modulated_value), list(cntrl_mod_mult_registers.left_operand_qubits) + list(cntrl_mod_mult_registers.right_operand_qubits) + list(cntrl_mod_mult_registers.carry_qubits) + list(cntrl_mod_mult_registers.temporary_qubits) + list(cntrl_mod_mult_registers.control_qubit)))
+        gates.append(partial(cntrl_mod_mult_circuit.append, modulated_adder_gate(classical_modulated_value, invert), list(cntrl_mod_mult_registers)))
         
-        for location, bit in enumerate(reversed(format((classical_base_value * (2 ** exponent)) % classical_modulated_value, f"0{_FUNDAMENTAL_BASIS}b"))):
-            if bit == "1":
-                gates.append(partial(cntrl_mod_mult_circuit.ccx, cntrl_mod_mult_registers.application_qubit[0], cntrl_mod_mult_registers.multiplier_qubits[exponent], cntrl_mod_mult_registers.left_operand_qubits[location]))
+        control_gates.reverse()
+        gates.extend(control_gates)
 
+    # in the case in which the control bit is zero, flip it, and set the b register to z so it is maintained
+    # within the circuit
     gates.append(partial(cntrl_mod_mult_circuit.x, cntrl_mod_mult_registers.application_qubit[0]))
     for location in range(_FUNDAMENTAL_BASIS):
         gates.append(partial(cntrl_mod_mult_circuit.ccx, cntrl_mod_mult_registers.application_qubit[0], cntrl_mod_mult_registers.multiplier_qubits[location], cntrl_mod_mult_registers.right_operand_qubits[location]))
@@ -268,7 +305,7 @@ def controlled_mod_mult_gate(classical_modulated_value: int, classical_base_valu
     if invert:
         gates.reverse()
     
-    for gate_number, gate in enumerate(gates):
+    for gate in gates:
         gate()
         
     custom_gate = cntrl_mod_mult_circuit.to_gate()
@@ -299,14 +336,15 @@ def modular_exponentiation(classical_modulated_value: int, classical_base_value:
         gates.append(partial(mod_exp_circuit.append, controlled_mod_mult_gate(classical_modulated_value, classical_base_value), mod_exp_registers[counting_qubit_number]))
 
         for location in range(_FUNDAMENTAL_BASIS):
-            partial(mod_exp_circuit.cswap, mod_exp_registers.counting_qubits[counting_qubit_number], mod_exp_registers.multiplier_qubits[location], mod_exp_registers.right_operand_qubits[location]),
+            gates.append(partial(mod_exp_circuit.cswap, mod_exp_registers.counting_qubits[counting_qubit_number], mod_exp_registers.multiplier_qubits[location], mod_exp_registers.right_operand_qubits[location]))
         gates.append(partial(mod_exp_circuit.append, controlled_mod_mult_gate(classical_modulated_value, classical_base_value, invert=True), mod_exp_registers[counting_qubit_number]))
             
     
     for gate in gates:
         gate()
-        
+
     custom_gate = mod_exp_circuit.to_gate()
+    custom_gate.label = "ModExp"
     return custom_gate
 
 def inverse_qft(number_of_qubits: int):
@@ -366,7 +404,7 @@ def create_shors_circuit():
     sim = AerSimulator(method='matrix_product_state', matrix_product_state_max_bond_dimension=4096, seed_simulator=42)
     compiled_circuit = qiskit.transpile(quantum_circuit, sim)
     counts = {}
-    job = sim.run(compiled_circuit, shots=10000)
+    job = sim.run(compiled_circuit, shots=100000)
     previous_status = None
     while not job.done():
         status = job.status()
