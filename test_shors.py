@@ -7,9 +7,9 @@ import random
 import math
 
 def test_shors():
-    # test_adder()
-    # test_mod_adder()
-    # test_controlled_mod_mult()
+    test_adder()
+    test_mod_adder()
+    test_controlled_mod_mult()
     test_mod_exp()
     
 def verify_value(
@@ -46,13 +46,6 @@ def convert_to_int(register_values: List[int]) -> int:
             classical_value += 2 ** location                
     return classical_value  
 
-def flip_bits(quantum_circuit: qiskit.QuantumCircuit, quantum_register: qiskit.QuantumRegister, register_values: List[int]) -> int:
-    classical_value = 0
-    for location, bit in enumerate(reversed(register_values)):
-        if bit == 1:
-            classical_value += 2 ** location                
-            quantum_circuit.x(quantum_register[location])
-    return classical_value
 
 def test_adder():
     left_operand_comb = list(itertools.product([0, 1], repeat=shors_algorithm._LEFT_OPERAND_REGISTER))
@@ -78,8 +71,8 @@ def test_adder():
                 name="adder_gate"
             )
 
-            right_register_classical = flip_bits(adder_circuit, adder_registers.right_operand_qubits, right_reg)
-            left_register_classical = flip_bits(adder_circuit, adder_registers.left_operand_qubits, left_reg)
+            right_register_classical = shors_algorithm.flip_bits(adder_circuit, adder_registers.right_operand_qubits, right_reg)
+            left_register_classical = shors_algorithm.flip_bits(adder_circuit, adder_registers.left_operand_qubits, left_reg)
 
             expected_right_register = left_register_classical + right_register_classical
             expected_left_register = left_register_classical
@@ -104,8 +97,8 @@ def test_adder():
             
             sub_right_reg = [int(bit) for bit in output_value]
             sub_left_reg = [0,1,1,1]
-            right_register_classical = flip_bits(adder_circuit, adder_registers.right_operand_qubits, sub_right_reg)
-            left_register_classical = flip_bits(adder_circuit, adder_registers.left_operand_qubits, sub_left_reg)
+            right_register_classical = shors_algorithm.flip_bits(adder_circuit, adder_registers.right_operand_qubits, sub_right_reg)
+            left_register_classical = shors_algorithm.flip_bits(adder_circuit, adder_registers.left_operand_qubits, sub_left_reg)
             print(f"right {right_register_classical}, left: {left_register_classical}")
 
             expected_right_register = (right_register_classical - left_register_classical) % (2 ** shors_algorithm._RIGHT_OPERAND_REGISTER)
@@ -164,12 +157,12 @@ def test_mod_adder():
             name="modulated_adder_gate"
         )
         
-        mod_register_classical = flip_bits(mod_adder_circuit, modulated_adder_registers.temporary_qubits, mod_reg)
+        mod_register_classical = shors_algorithm.flip_bits(mod_adder_circuit, modulated_adder_registers.temporary_qubits, mod_reg)
         right_reg = random.choice([right_op for right_op in right_operand_comb if convert_to_int(right_op) < mod_register_classical])
         left_reg = random.choice([left_op for left_op in left_operand_comb if convert_to_int(left_op) < mod_register_classical])
         print(f"Chose: L {left_reg}, R: {right_reg}")
-        right_register_classical = flip_bits(mod_adder_circuit, modulated_adder_registers.right_operand_qubits, right_reg)
-        left_register_classical = flip_bits(mod_adder_circuit, modulated_adder_registers.left_operand_qubits, left_reg)
+        right_register_classical = shors_algorithm.flip_bits(mod_adder_circuit, modulated_adder_registers.right_operand_qubits, right_reg)
+        left_register_classical = shors_algorithm.flip_bits(mod_adder_circuit, modulated_adder_registers.left_operand_qubits, left_reg)
 
         expected_right_register = (left_register_classical + right_register_classical) % mod_register_classical
         expected_left_register = left_register_classical
@@ -233,9 +226,9 @@ def inner_loop_mod_mult(mod_reg, application_reg, mult_reg):
         name="controlled_mod_mult_gate"
     )
     
-    mod_register_classical = flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.temporary_qubits, mod_reg)
-    mult_register_classical = flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.multiplier_qubits, mult_reg)
-    appl_register_classical = flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.application_qubit, application_reg)
+    mod_register_classical = shors_algorithm.flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.temporary_qubits, mod_reg)
+    mult_register_classical = shors_algorithm.flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.multiplier_qubits, mult_reg)
+    appl_register_classical = shors_algorithm.flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.application_qubit, application_reg)
 
     coprimes = [coprime for coprime in range(1, mod_register_classical) if math.gcd(coprime, mod_register_classical) == 1]
     
@@ -271,13 +264,15 @@ def inner_loop_mod_mult(mod_reg, application_reg, mult_reg):
     job = sim.run(compiled_circuit, shots=1)
     result = job.result()
     counts = result.get_counts(cntrl_mod_mult_circuit)
-    print(counts)
+    cntrl_mod_mult_circuit.reset(range(len(cntrl_mod_mult_circuit.qubits)))
+    cntrl_mod_mult_circuit.data.clear()
+    print(f"Forward: {counts}")
     verify_value(cntrl_mod_mult_circuit, counts, expected_left_register, left_operand_output)
     verify_value(cntrl_mod_mult_circuit, counts, expected_right_register, right_operand_output)
     verify_value(cntrl_mod_mult_circuit, counts, expected_carry_register, carry_output)
     verify_value(cntrl_mod_mult_circuit, counts, expected_mod_register, temporary_output)
     verify_value(cntrl_mod_mult_circuit, counts, expected_control_register, control_output)
-    verify_value(cntrl_mod_mult_circuit, counts, expected_mult_register, multiplier_output)
+    output_value = verify_value(cntrl_mod_mult_circuit, counts, expected_mult_register, multiplier_output)
     verify_value(cntrl_mod_mult_circuit, counts, expected_appl_register, application_output)
 
 
@@ -293,6 +288,7 @@ def test_controlled_mod_mult():
             for mod_reg in modulator_operand:
                 inner_loop_mod_mult(mod_reg, application_reg, mult_reg)
                 
+
 def test_mod_exp():
     modulator_operand = list(itertools.product([0, 1], repeat=shors_algorithm._TEMPORARY_REGISTER))
     modulator_operand = modulator_operand[2 ** 3:]
@@ -335,9 +331,9 @@ def test_mod_exp():
                 name="mod_exp_gate"
             )
             
-            mod_register_classical = flip_bits(mod_exp_circuit, mod_exp_registers.temporary_qubits, [1,1,1,1])
-            flip_bits(mod_exp_circuit, mod_exp_registers.multiplier_qubits, [0, 0, 1])
-            exp_register_classical = flip_bits(mod_exp_circuit, mod_exp_registers.counting_qubits, exp_reg)
+            mod_register_classical = shors_algorithm.flip_bits(mod_exp_circuit, mod_exp_registers.temporary_qubits, [1,1,1,1])
+            shors_algorithm.flip_bits(mod_exp_circuit, mod_exp_registers.multiplier_qubits, [0, 0, 1])
+            exp_register_classical = shors_algorithm.flip_bits(mod_exp_circuit, mod_exp_registers.counting_qubits, exp_reg)
 
             coprimes = [coprime for coprime in range(1, mod_register_classical) if math.gcd(coprime, mod_register_classical) == 1]
             
@@ -373,7 +369,7 @@ def test_mod_exp():
             job = sim.run(compiled_circuit, shots=1)
             result = job.result()
             counts = result.get_counts(mod_exp_circuit)
-            print(counts)
+            print(f"Forward: {counts}")
             verify_value(mod_exp_circuit, counts, expected_left_register, left_operand_output)
             verify_value(mod_exp_circuit, counts, expected_right_register, right_operand_output)
             verify_value(mod_exp_circuit, counts, expected_carry_register, carry_output)
