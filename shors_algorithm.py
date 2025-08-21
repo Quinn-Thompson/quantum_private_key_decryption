@@ -1,6 +1,6 @@
 import qiskit
 from qiskit_aer import AerSimulator
-from typing import List, Iterable, Optional, Callable
+from typing import List, Iterable, Optional, Callable, Dict
 from dataclasses import dataclass
 import numpy as np
 from functools import partial
@@ -16,7 +16,7 @@ from copy import deepcopy
 from quantum_visualization.gui_backend.sub_backend.visualize_qubits import DisplayProperties
 from quantum_visualization.gui_backend.main_backend import QuantumCircuitWindow
 
-_FUNDAMENTAL_BASIS = 3
+_FUNDAMENTAL_BASIS = 4
 
 _COUNTING_QUBITS = _FUNDAMENTAL_BASIS*2 # should be 2N, but can cause bloat
 _MULTIPLIER_REGISTER = _FUNDAMENTAL_BASIS
@@ -51,6 +51,20 @@ class QubitRegisters():
             + list(self.multiplier_qubits)
             + list(self.counting_qubits)
         )
+
+@dataclass
+class SumRegisters():
+    left_operand_qubit: qiskit.QuantumRegister
+    right_operand_qubit: qiskit.QuantumRegister
+    output_qubit: qiskit.QuantumRegister
+
+@dataclass
+class CarryRegisters():
+    input_carry_qubit: qiskit.QuantumRegister
+    left_operand_qubit: qiskit.QuantumRegister
+    right_operand_qubit: qiskit.QuantumRegister
+    output_carry_qubit: qiskit.QuantumRegister
+
 
 @dataclass
 class AdderRegisters():
@@ -113,6 +127,12 @@ class ModularExponentiationRegisters():
             + [list(self.counting_qubits)[item]]
         )
 
+def int_to_binary_list(n: int, length: Optional[int] = None) -> List[int]:
+    binary_str = bin(n)[2:] 
+    if length:
+        binary_str = binary_str.zfill(length)
+    return [int(bit) for bit in binary_str]
+
 def flip_bits(quantum_circuit: qiskit.QuantumCircuit, quantum_register: qiskit.QuantumRegister, register_values: List[int]) -> int:
     classical_value = 0
     for location, bit in enumerate(reversed(register_values)):
@@ -122,12 +142,45 @@ def flip_bits(quantum_circuit: qiskit.QuantumCircuit, quantum_register: qiskit.Q
     return classical_value
 
 
+def convert_to_gates(
+    quantum_circuit: qiskit.QuantumCircuit, 
+    invert: bool, 
+    gates: List[GateInfo], 
+    name: str,
+    visualization_window: Optional[QuantumCircuitWindow] = None    
+):
+    if invert:
+        gates.reverse()
+
+    for gate_info in gates:
+        gate_info.gate_operation()
+        if visualization_window is not None and gate_info.name is not None:
+            print(f"Adding Visualization for {gate_info.name}")
+            visualization_window.add_circuit_state(
+                quantum_circuit, 
+                DisplayProperties(plot_name=gate_info.name),
+                fast_state=True,
+            )
+            
+    if visualization_window is None:
+        custom_gate = quantum_circuit.to_gate()
+        custom_gate.label = f"{name}{'†' if invert else ''}"
+        return custom_gate
+
 def carry_gate(invert: bool = False, visualization_window: Optional[QuantumCircuitWindow] = None):
-    carry_circuit = qiskit.QuantumCircuit(4, name="carry_gate")
+    carry_registers = CarryRegisters(
+        input_carry_qubit = qiskit.QuantumRegister(1, name="Input Carry"),
+        left_operand_qubit = qiskit.QuantumRegister(1, name="Left Operand"),
+        right_operand_qubit = qiskit.QuantumRegister(1, name="Right Operand"),
+        output_carry_qubit = qiskit.QuantumRegister(1, name="Output Carry")
+    )
+    carry_circuit = qiskit.QuantumCircuit(
+        carry_registers.input_carry_qubit, carry_registers.left_operand_qubit, carry_registers.right_operand_qubit, carry_registers.output_carry_qubit, name="Carry Gate"
+    )
     if visualization_window is not None:
-        carry_circuit.x(0)
-        carry_circuit.x(1)
-        carry_circuit.x(2)
+        carry_circuit.x(carry_registers.input_carry_qubit)
+        carry_circuit.x(carry_registers.left_operand_qubit)
+        carry_circuit.x(carry_registers.right_operand_qubit)
         visualization_window.initialize_circuit_properties(carry_circuit, 33, DisplayProperties(plot_name="Initialized"))
     # this is for carrying the values of both registers and the previous into another
     # if both bits are 1, then a carry bit is used, however if either b or a is 1, but not both
@@ -147,30 +200,20 @@ def carry_gate(invert: bool = False, visualization_window: Optional[QuantumCircu
     # this gate only controls the carry bits, as 1 + 1 + 1 loses information
     
     gates: List[GateInfo] = [
-        GateInfo(partial(carry_circuit.ccx, 1, 2, 3), "Carry if R and C are 1"),
-        GateInfo(partial(carry_circuit.cx, 1, 2), "Xor L and R"), 
-        GateInfo(partial(carry_circuit.ccx, 0, 2, 3), "Our second Carry")
+        GateInfo(partial(carry_circuit.ccx, carry_registers.left_operand_qubit, carry_registers.right_operand_qubit, carry_registers.output_carry_qubit), "Carry if R and L are 1"),
+        GateInfo(partial(carry_circuit.cx, carry_registers.left_operand_qubit, carry_registers.right_operand_qubit), "Disarm Right Operand if Both are 1"), 
+        GateInfo(partial(carry_circuit.ccx, carry_registers.input_carry_qubit, carry_registers.right_operand_qubit, carry_registers.output_carry_qubit), "Carry if R and C input are 1")
     ]
-    if invert:
-        gates.reverse()
-        
-    for gate_info in gates:
-        gate_info.gate_operation()
-        if visualization_window is not None and gate_info.name is not None:
-            visualization_window.add_circuit_state(
-                carry_circuit, 
-                DisplayProperties(plot_name=gate_info.name),
-                fast_state=True,
-            )
-            
-    if visualization_window is None:
-        custom_gate = carry_circuit.to_gate()
-        custom_gate.label = f"Carry{'†' if invert else ''}"
-        return custom_gate
 
+    return convert_to_gates(carry_circuit, invert, gates, "Carry", visualization_window)
         
-def sum_gate(invert: bool = False):
-    carry_circuit = qiskit.QuantumCircuit(3, name="sum_gate")
+def sum_gate(invert: bool = False,  visualization_window: Optional[QuantumCircuitWindow] = None):
+    sum_registers = SumRegisters(
+        left_operand_qubit = qiskit.QuantumRegister(1, name="Left Operand"),
+        right_operand_qubit = qiskit.QuantumRegister(1, name="Right Operand"),
+        output_qubit = qiskit.QuantumRegister(1, name="Output")
+    )
+    sum_circuit = qiskit.QuantumCircuit(sum_registers.left_operand_qubit, sum_registers.right_operand_qubit, sum_registers.output_qubit, name="Sum Gate")
     # this is for checking what the actual output of the addition is
     # because the carry gates only handles the carry bits
     # l + r
@@ -178,30 +221,27 @@ def sum_gate(invert: bool = False):
     # 0 + 1 = 1
     # 1 + 0 = 1
     # 1 + 1 = 0
+    if visualization_window is not None:
+        sum_circuit.x(sum_registers.left_operand_qubit)
+        sum_circuit.x(sum_registers.right_operand_qubit)
+        visualization_window.initialize_circuit_properties(sum_circuit, 33, DisplayProperties(plot_name="Initialized"))
+        
     gates = [
-        partial(carry_circuit.cx, 1, 2), 
-        partial(carry_circuit.cx, 0, 2), 
+        GateInfo(partial(sum_circuit.cx, sum_registers.left_operand_qubit, sum_registers.output_qubit), "Check L Value"), 
+        GateInfo(partial(sum_circuit.cx, sum_registers.right_operand_qubit, sum_registers.output_qubit), "Check R Value"), 
     ]
-    if invert:
-        gates.reverse()
-        
-    for gate in gates:
-        gate()
-        
-    custom_gate = carry_circuit.to_gate()
-    custom_gate.label = f"Sum{'†' if invert else ''}"
-    return custom_gate
+    return convert_to_gates(sum_circuit, invert, gates, "Sum", visualization_window)
     
 def adder_gate(invert: bool = False, visualization_window: Optional[QuantumCircuitWindow] = None):
     adder_registers = AdderRegisters(
-        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="left_operand_qubits"),
-        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="right_operand_qubits"),
-        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="carry_qubits")
+        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="Left Operand Qubits"),
+        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="Right Operand Qubits"),
+        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="Carry Qubits")
     )
-    adder_circuit = qiskit.QuantumCircuit(adder_registers.left_operand_qubits, adder_registers.right_operand_qubits, adder_registers.carry_qubits, name="adder_gate")
+    adder_circuit = qiskit.QuantumCircuit(adder_registers.left_operand_qubits, adder_registers.right_operand_qubits, adder_registers.carry_qubits, name="Adder Gate")
     if visualization_window is not None:
-        flip_bits(adder_circuit, adder_registers.left_operand_qubits, [1, 0, 1])
-        flip_bits(adder_circuit, adder_registers.right_operand_qubits, [0, 1, 1])
+        flip_bits(adder_circuit, adder_registers.left_operand_qubits, int_to_binary_list(5, length=_FUNDAMENTAL_BASIS))
+        flip_bits(adder_circuit, adder_registers.right_operand_qubits, int_to_binary_list(3, length=_FUNDAMENTAL_BASIS))
         visualization_window.initialize_circuit_properties(adder_circuit, 33, DisplayProperties(plot_name="Initialized"))
     # this is the full adder circuit for providing the output
     # the carry values are handled for each bit, until b[3] holds the final remainder bit
@@ -226,9 +266,9 @@ def adder_gate(invert: bool = False, visualization_window: Optional[QuantumCircu
             adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1], 
             adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS]
         ]), "Compute Last Carry Bit")
-    ) 
-
-    gates.append(GateInfo(partial(adder_circuit.cx, adder_registers.left_operand_qubits[_FUNDAMENTAL_BASIS-1], adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1]), "Maintain Last Carry"))
+    )
+    # this cx gate is applied to preserve the last carry bit
+    gates.append(GateInfo(partial(adder_circuit.cx, adder_registers.left_operand_qubits[_FUNDAMENTAL_BASIS-1], adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS-1]), "Preserve Last Carry"))
     for location in range(_FUNDAMENTAL_BASIS-1, 0, -1):
         gates.append(GateInfo(partial(
             adder_circuit.append, sum_gate(invert), 
@@ -255,32 +295,15 @@ def adder_gate(invert: bool = False, visualization_window: Optional[QuantumCircu
             adder_registers.right_operand_qubits[0]
         ]), "Sum First Bits")
     ) 
-
-    
-    if invert:
-        gates.reverse()
-        
-    for gate_info in gates:
-        gate_info.gate_operation()
-        if visualization_window is not None and gate_info.name is not None:
-            visualization_window.add_circuit_state(
-                adder_circuit, 
-                DisplayProperties(plot_name=gate_info.name),
-                fast_state=True,
-            )
-        
-    if visualization_window is None:
-        custom_gate = adder_circuit.to_gate()
-        custom_gate.label = f"Adder{'†' if invert else ''}"
-        return custom_gate
+    return convert_to_gates(adder_circuit, invert, gates, "Adder", visualization_window)
 
 def modulated_adder_gate(classical_modulated_value: int, invert: bool=False, visualization_window: Optional[QuantumCircuitWindow] = None):
     modulated_adder_registers = ModulatedAdderRegisters(
-        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="left_operand_qubits"),
-        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="right_operand_qubits"),
-        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="carry_qubits"),
-        temporary_qubits = qiskit.QuantumRegister(_TEMPORARY_REGISTER, name="remainder_qubits"),
-        control_qubit = qiskit.QuantumRegister(_CONTROL_QUBIT, name="control_qubit"), 
+        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="Left Operand Qubits"),
+        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="Right Operand Qubits"),
+        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="Carry Qubits"),
+        temporary_qubits = qiskit.QuantumRegister(_TEMPORARY_REGISTER, name="Modulation Value Qubits"),
+        control_qubit = qiskit.QuantumRegister(_CONTROL_QUBIT, name="Control Qubit"), 
         
     )
     mod_adder_circuit = qiskit.QuantumCircuit(
@@ -289,25 +312,25 @@ def modulated_adder_gate(classical_modulated_value: int, invert: bool=False, vis
         modulated_adder_registers.carry_qubits, 
         modulated_adder_registers.temporary_qubits,
         modulated_adder_registers.control_qubit,
-        name="modulated_adder_gate"
+        name="Modulated Adder Gate"
     )
     if visualization_window is not None:
-        flip_bits(mod_adder_circuit, modulated_adder_registers.left_operand_qubits, [1, 1, 0])
-        flip_bits(mod_adder_circuit, modulated_adder_registers.right_operand_qubits, [1, 1, 0])
-        flip_bits(mod_adder_circuit, modulated_adder_registers.temporary_qubits, [1, 0, 1])
+        flip_bits(mod_adder_circuit, modulated_adder_registers.left_operand_qubits, int_to_binary_list(3, length=_FUNDAMENTAL_BASIS))
+        flip_bits(mod_adder_circuit, modulated_adder_registers.right_operand_qubits, int_to_binary_list(3, length=_FUNDAMENTAL_BASIS))
+        flip_bits(mod_adder_circuit, modulated_adder_registers.temporary_qubits, int_to_binary_list(5, length=_FUNDAMENTAL_BASIS))
         visualization_window.initialize_circuit_properties(mod_adder_circuit, 33, DisplayProperties(plot_name="Initialized"))
     # the last two adders are just to uncompute the control qubit
     
     # a+b
     gates: List[GateInfo] = [
-        GateInfo(partial(mod_adder_circuit.append, adder_gate(invert), list(modulated_adder_registers)), "Add A and B")
+        GateInfo(partial(mod_adder_circuit.append, adder_gate(invert), list(modulated_adder_registers)), "Add Left and Right")
     ]
     # a is now N, and N is now a
     swap_gates: List[GateInfo] = []
     operation_name = None
     for location in range(_FUNDAMENTAL_BASIS):
         if location == _FUNDAMENTAL_BASIS - 1:
-            operation_name = "Swap A for N"
+            operation_name = "Swap Left for N"
         gates.append(GateInfo(partial(mod_adder_circuit.swap, modulated_adder_registers.temporary_qubits[location], modulated_adder_registers.left_operand_qubits[location]), operation_name))
         swap_gates.append(gates[-1])
     # subtract N from (a+b), because a < N and b < N from being factored in by N, 
@@ -318,10 +341,10 @@ def modulated_adder_gate(classical_modulated_value: int, invert: bool=False, vis
     # to modulate
     gates.extend(
         [
-            GateInfo(partial(mod_adder_circuit.append, adder_gate(not invert), list(modulated_adder_registers)), "Subtract N from B"), 
+            GateInfo(partial(mod_adder_circuit.append, adder_gate(not invert), list(modulated_adder_registers)), "Subtract N from L + R"), 
             GateInfo(partial(mod_adder_circuit.x, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS]), None),
             GateInfo(partial(mod_adder_circuit.cx, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS], modulated_adder_registers.control_qubit[0]), None),
-            GateInfo(partial(mod_adder_circuit.x, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS]), "Flip Control for Re-Adding"),
+            GateInfo(partial(mod_adder_circuit.x, modulated_adder_registers.right_operand_qubits[_FUNDAMENTAL_BASIS]), "Flip Control for Zeroing"),
         ]
     )
     # zero out N bits if control qubit is 1
@@ -334,7 +357,7 @@ def modulated_adder_gate(classical_modulated_value: int, invert: bool=False, vis
     
     # add N back in if it hasn't been zerod out
     gates.append(
-        GateInfo(partial(mod_adder_circuit.append, adder_gate(invert), list(modulated_adder_registers)), "Add N if Not Zeroed")
+        GateInfo(partial(mod_adder_circuit.append, adder_gate(invert), list(modulated_adder_registers)), "Add N to L + R - N if Not Zeroed")
     )
     
     # reset the N bits
@@ -354,32 +377,17 @@ def modulated_adder_gate(classical_modulated_value: int, invert: bool=False, vis
         ]
     )
     
-    if invert:
-        gates.reverse()
-        
-    for gate_info in gates:
-        gate_info.gate_operation()
-        if visualization_window is not None and gate_info.name is not None:
-            visualization_window.add_circuit_state(
-                mod_adder_circuit, 
-                DisplayProperties(plot_name=gate_info.name),
-                fast_state=True,
-            )
-        
-    if visualization_window is None:
-        custom_gate = mod_adder_circuit.to_gate()
-        custom_gate.label = f"ModAdder{'†' if invert else ''}"
-        return custom_gate
+    return convert_to_gates(mod_adder_circuit, invert, gates, "ModAdder", visualization_window)
 
-def controlled_mod_mult_gate(classical_modulated_value: int, classical_base_value: int, invert: bool=False, visualization_window: Optional[QuantumCircuitWindow] = None):
+def controlled_mod_mult_gate(classical_modulated_value: int, modulated_coprime: int, invert: bool=False, visualization_window: Optional[QuantumCircuitWindow] = None):
     cntrl_mod_mult_registers = ControlModMultRegisters(
-        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="left_operand_qubits"),
-        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="right_operand_qubits"),
-        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="carry_qubits"),
-        temporary_qubits = qiskit.QuantumRegister(_TEMPORARY_REGISTER, name="remainder_qubits"),
-        control_qubit = qiskit.QuantumRegister(_CONTROL_QUBIT, name="control_qubit"), 
-        multiplier_qubits= qiskit.QuantumRegister(_MULTIPLIER_REGISTER, name="multiplier_qubits"),
-        application_qubit= qiskit.QuantumRegister(1, name="application_qubit"),
+        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="Left Operand Qubits"),
+        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="Right Operand Qubits"),
+        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="Carry Qubits"),
+        temporary_qubits = qiskit.QuantumRegister(_TEMPORARY_REGISTER, name="Modulation Value Qubits"),
+        control_qubit = qiskit.QuantumRegister(_CONTROL_QUBIT, name="Control Qubit"), 
+        multiplier_qubits= qiskit.QuantumRegister(_MULTIPLIER_REGISTER, name="Multiplier Qubits"),
+        application_qubit= qiskit.QuantumRegister(1, name="Counting Qubit"),
     )
     cntrl_mod_mult_circuit = qiskit.QuantumCircuit(
         cntrl_mod_mult_registers.left_operand_qubits, 
@@ -389,13 +397,13 @@ def controlled_mod_mult_gate(classical_modulated_value: int, classical_base_valu
         cntrl_mod_mult_registers.control_qubit,
         cntrl_mod_mult_registers.multiplier_qubits,
         cntrl_mod_mult_registers.application_qubit,
-        name="controlled_mod_mult_gate"
+        name="CMMG"
     )
     
     if visualization_window is not None:
-        flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.application_qubit, [0])
-        flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.multiplier_qubits, [0, 1, 0])
-        flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.temporary_qubits, [1, 0, 1])
+        flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.application_qubit, [1])
+        flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.multiplier_qubits, int_to_binary_list(2, length=_FUNDAMENTAL_BASIS))
+        flip_bits(cntrl_mod_mult_circuit, cntrl_mod_mult_registers.temporary_qubits, int_to_binary_list(classical_modulated_value, length=_FUNDAMENTAL_BASIS))
         visualization_window.initialize_circuit_properties(cntrl_mod_mult_circuit, 33, DisplayProperties(plot_name="Initialized"))
     
     # for the hadamard state, we are considering all possible exponential from the application qubit
@@ -409,24 +417,26 @@ def controlled_mod_mult_gate(classical_modulated_value: int, classical_base_valu
     # however, we need to ensure it both stays within the bounds and also follows z*m mod N, so instead of
     # calculating z*m, z*m mod N is used to calculate gate positions on the adder gate
     gates: List[GateInfo] = []
-    for exponent in range(_FUNDAMENTAL_BASIS):
-        modulated_coprime = classical_base_value * (2 ** exponent) % classical_modulated_value
+    for bit_shift_amount in range(_FUNDAMENTAL_BASIS):
+        bit_segment_of_both_components = modulated_coprime * (2 ** bit_shift_amount) % classical_modulated_value
         control_gates = []
-        for location, bit in enumerate(reversed(format(modulated_coprime, f"0{_FUNDAMENTAL_BASIS}b"))):
+        for location, bit in enumerate(reversed(format(bit_segment_of_both_components, f"0{_FUNDAMENTAL_BASIS}b"))):
             if bit == "1":
                 gates.append(GateInfo(partial(
                     cntrl_mod_mult_circuit.ccx, 
                     cntrl_mod_mult_registers.application_qubit[0], 
-                    cntrl_mod_mult_registers.multiplier_qubits[exponent], 
+                    cntrl_mod_mult_registers.multiplier_qubits[bit_shift_amount], 
                     cntrl_mod_mult_registers.left_operand_qubits[location]
-                    ), "Control Bit Location Multiplier")
+                    ), None)
                 )
                 control_gates.append(gates[-1])
+        gates[-1].name = "Control Bit Location Multiplier"
         
-        gates.append(GateInfo(partial(cntrl_mod_mult_circuit.append, modulated_adder_gate(classical_modulated_value, invert), list(cntrl_mod_mult_registers)), "Modulated Addition"))
-        
+        gates.append(GateInfo(partial(cntrl_mod_mult_circuit.append, modulated_adder_gate(classical_modulated_value, invert), list(cntrl_mod_mult_registers)), f"Modulated Addition for bit {bit_shift_amount}"))
+
         control_gates.reverse()
         gates.extend(control_gates)
+        gates[-1].name = "Undo Control Bit Location Multiplier"
 
     # in the case in which the control bit is zero, flip it, and set the b register to z so it is maintained
     # within the circuit
@@ -435,31 +445,17 @@ def controlled_mod_mult_gate(classical_modulated_value: int, classical_base_valu
         gates.append(GateInfo(partial(cntrl_mod_mult_circuit.ccx, cntrl_mod_mult_registers.application_qubit[0], cntrl_mod_mult_registers.multiplier_qubits[location], cntrl_mod_mult_registers.right_operand_qubits[location]), None))
     gates.append(GateInfo(partial(cntrl_mod_mult_circuit.x, cntrl_mod_mult_registers.application_qubit[0]), "Push Z into B"))
 
-    if invert:
-        gates.reverse()
-        
-    for gate_info in gates:
-        gate_info.gate_operation()
-        if visualization_window is not None and gate_info.name is not None:
-            visualization_window.add_circuit_state(
-                cntrl_mod_mult_circuit, 
-                DisplayProperties(plot_name=gate_info.name),
-                fast_state=True,
-            )
-        
-    if visualization_window is None:
-        custom_gate = cntrl_mod_mult_circuit.to_gate()
-        return custom_gate
+    return convert_to_gates(cntrl_mod_mult_circuit, invert, gates, "CntrlModMult", visualization_window)
 
-def modular_exponentiation(classical_modulated_value: int, classical_base_value: int):
+def modular_exponentiation(classical_modulated_value: int, classical_base_value: int, visualization_window: Optional[QuantumCircuitWindow] = None):
     mod_exp_registers = ModularExponentiationRegisters(
-        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="left_operand_qubits"),
-        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="right_operand_qubits"),
-        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="carry_qubits"),
-        temporary_qubits = qiskit.QuantumRegister(_TEMPORARY_REGISTER, name="remainder_qubits"),
-        control_qubit = qiskit.QuantumRegister(_CONTROL_QUBIT, name="control_qubit"), 
-        multiplier_qubits= qiskit.QuantumRegister(_MULTIPLIER_REGISTER, name="multiplier_qubits"),
-        counting_qubits= qiskit.QuantumRegister(_COUNTING_QUBITS, name="counting_qubits"),
+        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="Left Operand Qubits"),
+        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="Right Operand Qubits"),
+        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="Carry Qubits"),
+        temporary_qubits = qiskit.QuantumRegister(_TEMPORARY_REGISTER, name="Modulation Value Qubits"),
+        control_qubit = qiskit.QuantumRegister(_CONTROL_QUBIT, name="Control Qubit"), 
+        multiplier_qubits= qiskit.QuantumRegister(_MULTIPLIER_REGISTER, name="Multiplier Qubits"),
+        counting_qubits= qiskit.QuantumRegister(_COUNTING_QUBITS, name="Counting Qubits"),
     )
     mod_exp_circuit = qiskit.QuantumCircuit(
         mod_exp_registers.left_operand_qubits, 
@@ -469,9 +465,16 @@ def modular_exponentiation(classical_modulated_value: int, classical_base_value:
         mod_exp_registers.control_qubit,
         mod_exp_registers.multiplier_qubits,
         mod_exp_registers.counting_qubits,
-        name="modular_exponentiation"
+        name="Modular Exponentiation"
     )
-    gates = []
+    
+    if visualization_window is not None:
+        flip_bits(mod_exp_circuit, mod_exp_registers.counting_qubits, int_to_binary_list(7, length=_FUNDAMENTAL_BASIS*2))
+        flip_bits(mod_exp_circuit, mod_exp_registers.multiplier_qubits, int_to_binary_list(1, length=_FUNDAMENTAL_BASIS))
+        flip_bits(mod_exp_circuit, mod_exp_registers.temporary_qubits, int_to_binary_list(classical_modulated_value, length=_FUNDAMENTAL_BASIS))
+        visualization_window.initialize_circuit_properties(mod_exp_circuit, 33, DisplayProperties(plot_name="Initialized"))
+    
+    gates: List[GateInfo] = []
     # x is the control for the exponential value
     # first, the multiplication mod gate is used on Z, with m being a and Z being 00...01, meaning we get a Mod N as our b register 
     # this is then swapped with Z, so Z holds a mod N and b holds 1, thus when the inverse is applied, it reverse the global state
@@ -481,37 +484,113 @@ def modular_exponentiation(classical_modulated_value: int, classical_base_value:
 
     for counting_qubit_number in range(_COUNTING_QUBITS):
         exponential_component = classical_base_value ** (2 ** counting_qubit_number)
-        gates.append(partial(mod_exp_circuit.append, controlled_mod_mult_gate(classical_modulated_value, exponential_component), mod_exp_registers[counting_qubit_number]))
-
+        gates.append(GateInfo(partial(
+            mod_exp_circuit.append, 
+            controlled_mod_mult_gate(classical_modulated_value, exponential_component), 
+            mod_exp_registers[counting_qubit_number]
+        ), f"Multiply Z with y^2^k For CB {counting_qubit_number}"))
+        # switch output back with Z register
         for location in range(_FUNDAMENTAL_BASIS):
-            gates.append(partial(mod_exp_circuit.cswap, mod_exp_registers.counting_qubits[counting_qubit_number], mod_exp_registers.multiplier_qubits[location], mod_exp_registers.right_operand_qubits[location]))
-        gates.append(partial(mod_exp_circuit.append, controlled_mod_mult_gate(classical_modulated_value, pow(exponential_component, -1, classical_modulated_value), invert=True), mod_exp_registers[counting_qubit_number]))
+
+            gates.append(GateInfo(partial(
+                mod_exp_circuit.cswap, 
+                mod_exp_registers.counting_qubits[counting_qubit_number], 
+                mod_exp_registers.multiplier_qubits[location], 
+                mod_exp_registers.right_operand_qubits[location]
+            ), None))
+        gates[-1].name =  f"Swap Adder Output With Z For CB {counting_qubit_number}"
+        # revert back to Z 
+        gates.append(GateInfo(partial(
+            mod_exp_circuit.append, 
+            controlled_mod_mult_gate(classical_modulated_value, pow(exponential_component, -1, classical_modulated_value), invert=True), 
+            mod_exp_registers[counting_qubit_number]
+        ), f"Remove y^2^k For CB {counting_qubit_number}"))
             
+    return convert_to_gates(mod_exp_circuit, False, gates, "CntrlModMult", visualization_window)
+
+def qpe_gate(number_of_qubits: int, invert: bool = False, visualization_window: Optional[QuantumCircuitWindow] = None):
+    qpe_register= qiskit.QuantumRegister(number_of_qubits, name="QPE Qubit Register")
+    quantum_phase_estimation_circuit = qiskit.QuantumCircuit(qpe_register, name="Quantum Phase Estimation")  
+    gates: List[GateInfo] = []
+    if visualization_window is not None:
+        flip_bits(quantum_phase_estimation_circuit, [0, 3, 5], int_to_binary_list(7, length=_FUNDAMENTAL_BASIS*2))
+        visualization_window.initialize_circuit_properties(quantum_phase_estimation_circuit, 33, DisplayProperties(plot_name="Initialized"))
     
-    for gate in gates:
-        gate()
+    
+    # reverse order, as qubit 0 is the LSB, and the paper stat "reverse the order of the qubits with a string of SWAP" to fix this
+    for qubit_number in range(number_of_qubits // 2):
+        # reverse the order of the qubits 
+        gates.append(GateInfo(partial(quantum_phase_estimation_circuit.swap, qubit_number, number_of_qubits - qubit_number - 1), None))
+    
+    gates[-1].name = "Reverse Qubit Ordering"
+    for controlling_qubit_number in reversed(range(number_of_qubits)):
+        # provides the superposition basis
+        gates.append(GateInfo(partial(quantum_phase_estimation_circuit.h, controlling_qubit_number), f"Place Qubit {controlling_qubit_number} Into Superposition"))
+        for qubit_number in reversed(range(controlling_qubit_number)):
+            # phase angle decreases with qubit order
+            phase_angle = np.pi / (2 ** (controlling_qubit_number - qubit_number))
+            # invert angle if inverse QPE
+            # rotates the counting qubit 
+            gates.append(GateInfo(partial(quantum_phase_estimation_circuit.cp, phase_angle * -1 if invert else phase_angle, controlling_qubit_number, qubit_number), None))
+        gates[-1].name = f"Decompose Qubit {controlling_qubit_number}"
+            
+    return convert_to_gates(quantum_phase_estimation_circuit, invert, gates, "QPE", visualization_window)
 
-    custom_gate = mod_exp_circuit.to_gate()
-    custom_gate.label = "ModExp"
-    return custom_gate
+def visualize_shors():
+    bloch_sphere_window = QuantumCircuitWindow(ignore_entanglement=False)
 
-def inverse_qft(number_of_qubits: int):
-    invert_quantum_fourier_circuit = qiskit.QuantumCircuit(number_of_qubits)  
-    for counting_qubit in range(number_of_qubits):
-        for k in range(counting_qubit):
-            angle = -np.pi / (2 ** (counting_qubit - k))
-            invert_quantum_fourier_circuit.cp(angle, counting_qubit, k)
-        invert_quantum_fourier_circuit.h(counting_qubit)
-        
-    for i in range(number_of_qubits // 2):
-        invert_quantum_fourier_circuit.swap(i, number_of_qubits - i - 1)
+    qubit_registers = QubitRegisters(
+        left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="Left Operand Qubits"),
+        right_operand_qubits = qiskit.QuantumRegister(_RIGHT_OPERAND_REGISTER, name="Right Operand Qubits"),
+        carry_qubits = qiskit.QuantumRegister(_CARRY_REGISTER, name="Carry Qubits"),
+        temporary_qubits = qiskit.QuantumRegister(_TEMPORARY_REGISTER, name="Modulation Value Qubits"),
+        control_qubit = qiskit.QuantumRegister(_CONTROL_QUBIT, name="Control Qubit"), 
+        multiplier_qubits= qiskit.QuantumRegister(_MULTIPLIER_REGISTER, name="Multiplier Qubits"),
+        counting_qubits= qiskit.QuantumRegister(_COUNTING_QUBITS, name="Counting Qubits"),
+    )
+    classical_output = qiskit.ClassicalRegister(_COUNTING_QUBITS, "Classical Output")
+    quantum_circuit = qiskit.QuantumCircuit(
+        qubit_registers.left_operand_qubits, 
+        qubit_registers.right_operand_qubits, 
+        qubit_registers.carry_qubits, 
+        qubit_registers.temporary_qubits,
+        qubit_registers.control_qubit,
+        qubit_registers.multiplier_qubits,
+        qubit_registers.counting_qubits,
+        classical_output,
+        name="Shor's Algorithm"
+    )
+    prime_1 = 2
+    prime_2 = 2
+    coprime = 3
+    product_of_primes = prime_1 * prime_2
 
-    invert_quantum_fourier_circuit.name = "QFT†"
-    custom_gate = invert_quantum_fourier_circuit.to_gate()
-    return custom_gate
+    bloch_sphere_window.initialize_circuit_properties(quantum_circuit, 33, DisplayProperties(plot_name="Initialized"))
+    print("Running Shors Algorithm")
+    quantum_circuit.h(qubit_registers.counting_qubits)
+    quantum_circuit.x(qubit_registers.multiplier_qubits[0])
+    # flip N register so that N can be used in the modulated adder
+    for location, bit in enumerate(format(product_of_primes, f"0{_FUNDAMENTAL_BASIS}b")):
+        if bit == "1":
+            quantum_circuit.x(qubit_registers.temporary_qubits[location])
+    # pass in coprime a so it can be pre-calculated during the multiplcation process
+    quantum_circuit.append(modular_exponentiation(product_of_primes, coprime), list(qubit_registers))
+    bloch_sphere_window.add_circuit_state(
+        quantum_circuit, 
+        DisplayProperties(plot_name="Modular Exponentiation"),
+        fast_state=True,
+    )
+    quantum_circuit.append(qpe_gate(_COUNTING_QUBITS,invert=True), qubit_registers.counting_qubits)
+    bloch_sphere_window.add_circuit_state(
+        quantum_circuit, 
+        DisplayProperties(plot_name="Inverse QPE"),
+        fast_state=True,
+    )
+    bloch_sphere_window.animate_circuit()
+    bloch_sphere_window.app.exec()
 
-def create_shors_circuit():
-    bloch_sphere_window = QuantumCircuitWindow()
+
+def entire_shors_algorithm():
 
     qubit_registers = QubitRegisters(
         left_operand_qubits = qiskit.QuantumRegister(_LEFT_OPERAND_REGISTER, name="left_operand_qubits"),
@@ -534,74 +613,94 @@ def create_shors_circuit():
         classical_output,
         name="circuit"
     )
-    prime_1 = 2
-    prime_2 = 3
-    coprime = 5
+    prime_1 = 3
+    prime_2 = 5
+    coprime = 7
     product_of_primes = prime_1 * prime_2
 
-    bloch_sphere_window.initialize_circuit_properties(quantum_circuit, 33, DisplayProperties(plot_name="Initialized"))
     print("Running Shors Algorithm")
     quantum_circuit.h(qubit_registers.counting_qubits)
     quantum_circuit.x(qubit_registers.multiplier_qubits[0])
+    # flip N register so that N can be used in the modulated adder
     for location, bit in enumerate(format(product_of_primes, f"0{_FUNDAMENTAL_BASIS}b")):
         if bit == "1":
             quantum_circuit.x(qubit_registers.temporary_qubits[location])
+    # pass in coprime a so it can be pre-calculated during the multiplcation process
     quantum_circuit.append(modular_exponentiation(product_of_primes, coprime), list(qubit_registers))
-    bloch_sphere_window.add_circuit_state(
-        quantum_circuit, 
-        DisplayProperties(plot_name="modular_exp"),
-        fast_state=True,
-    )
-    quantum_circuit.append(inverse_qft(_COUNTING_QUBITS), qubit_registers.counting_qubits)
-    bloch_sphere_window.add_circuit_state(
-        quantum_circuit, 
-        DisplayProperties(plot_name="inverse_QPE"),
-        fast_state=True,
-    )
-    # quantum_circuit.measure(qubit_registers.counting_qubits, classical_output)
+    quantum_circuit.append(qpe_gate(_COUNTING_QUBITS,invert=True), qubit_registers.counting_qubits)
+    quantum_circuit.measure(qubit_registers.counting_qubits, classical_output)
 
-    # sim = AerSimulator(method='matrix_product_state', matrix_product_state_max_bond_dimension=4096, seed_simulator=42)
-    # compiled_circuit = qiskit.transpile(quantum_circuit, sim)
-    # counts = {}
-    # job = sim.run(compiled_circuit, shots=1024)
-    # previous_status = None
-    # while not job.done():
-    #     status = job.status()
-    #     if status != previous_status:
-    #         print("Waiting... job status:", status, flush=True)
-    #         previous_status = status
-    #     time.sleep(1)
-    # result = job.result()
-    # counts |= result.get_counts(quantum_circuit)
+    sim = AerSimulator(method='matrix_product_state', matrix_product_state_max_bond_dimension=4096, seed_simulator=42)
+    compiled_circuit = qiskit.transpile(quantum_circuit, sim)
+    counts = {}
+    job = sim.run(compiled_circuit, shots=1024)
+    previous_status = None
+    while not job.done():
+        status = job.status()
+        if status != previous_status:
+            print("Waiting... job status:", status, flush=True)
+            previous_status = status
+        time.sleep(1)
+    result = job.result()
+    counts |= result.get_counts(quantum_circuit)
     print("Finished Shors Algorithm")
-    # print(counts)
-    # found_factor = False
-    # attempt = 0
-    # for measure_key, measure_value in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:7]:
-    #     measured_int = int(measure_key, 2)
-    #     if measured_int == 0 or measured_int == 2**_COUNTING_QUBITS - 1:
-    #         continue
+    print(counts)
+    found_factor = False
+    attempt = 0
+    found_factors = [None, None]
+    for measure_key, measure_value in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:7]:
+        measured_int = int(measure_key, 2)
+        if measured_int == 0 or measured_int == 2**_COUNTING_QUBITS - 1:
+            continue
         
-    #     phase = measured_int / 2**_COUNTING_QUBITS
-    #     frac = Fraction(phase).limit_denominator(product_of_primes)
-    #     r = frac.denominator
-    #     if r % 2 != 0 or r <= 1:
-    #         continue  # skip odd periods
-    #     attempt += 1
-    #     if pow(coprime, r, product_of_primes) == 1:
-    #         x = pow(coprime, r // 2, product_of_primes)
-    #         factors = [math.gcd(x - 1, product_of_primes), math.gcd(x + 1, product_of_primes)]
+        phase = measured_int / 2**_COUNTING_QUBITS
+        frac = Fraction(phase).limit_denominator(product_of_primes)
+        r = frac.denominator
+        if r % 2 != 0 or r <= 1:
+            continue  # skip odd periods
+        attempt += 1
+        if pow(coprime, r, product_of_primes) == 1:
+            x = pow(coprime, r // 2, product_of_primes)
+            factors = [math.gcd(x - 1, product_of_primes), math.gcd(x + 1, product_of_primes)]
             
-    #         if 1 < factors[0] < product_of_primes:
-    #             print(f"Factor found: {factors[0]}")
-    #             found_factor = True
-    #         if 1 < factors[1] < product_of_primes:
-    #             print(f"Factor found: {factors[1]}")
-    #             found_factor = True
-    #     if found_factor:
-    #         print(f"Found factor on proper phase attempt {attempt} for value {measure_key}")
-    #         break
-    # plot_histogram(counts)
-    # plt.show()
-    bloch_sphere_window.animate_circuit()
-    bloch_sphere_window.app.exec()
+            if 1 < factors[0] < product_of_primes:
+                print(f"Factor found: {factors[0]}")
+                found_factors[0] = factors[0]
+                found_factor = True
+            if 1 < factors[1] < product_of_primes:
+                print(f"Factor found: {factors[1]}")
+                found_factors[1] = factors[1]
+                found_factor = True
+        if found_factor:
+            print(f"Found factor on proper phase attempt {attempt} for value {measure_key}")
+            break
+    sorted_plot_histogram(counts, found_factors[0], found_factors[1], attempt, measure_key)
+    plt.show()
+
+def sorted_plot_histogram(
+    counts: Dict[str, int], 
+    factor_1: Optional[int] = None, 
+    factor_2: Optional[int] = None, 
+    attempt: Optional[int] = None, 
+    measure_key: Optional[int] = None,
+):
+    sorted_counts = dict(sorted(counts.items(), key=lambda item: int(item[0], 2)))
+    plot_histogram(
+        sorted_counts,
+        title="Shor's Algorithm Probability Distribution",
+        figsize=(10,5),
+        color="midnightblue",
+        bar_labels=False  # set to True if you want value labels on bars
+    )
+
+    if factor_1 is None and factor_2 is None:
+        factor_string = "Found No Factors"
+    else:
+        factor_string = "Found: "
+        if factor_1:
+            factor_string += f"Factor 1 ({factor_1}), "
+        if factor_2:
+            factor_string += f"Factor 2 ({factor_2}), "
+        factor_string += f"on Valid Phase Attempt {attempt} for Value {measure_key}"
+            
+    plt.suptitle(factor_string, fontsize=10, y=1.0)

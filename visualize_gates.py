@@ -4,12 +4,19 @@ from quantum_visualization.gui_backend.main_backend import QuantumCircuitWindow
 
 def visualize():
     # bloch_sphere_window = QuantumCircuitWindow()
+    # shors_algorithm.sum_gate(visualization_window=bloch_sphere_window)
+
+    # bloch_sphere_window.animate_circuit()
+    # bloch_sphere_window.app.exec()
+
+    
+    # bloch_sphere_window = QuantumCircuitWindow()
     # shors_algorithm.carry_gate(visualization_window=bloch_sphere_window)
 
     # bloch_sphere_window.animate_circuit()
     # bloch_sphere_window.app.exec()
 
-    # bloch_sphere_window = QuantumCircuitWindow()
+    # bloch_sphere_window = QuantumCircuitWindow(ignore_entanglement=True)
     # shors_algorithm.adder_gate(visualization_window=bloch_sphere_window)
 
     # bloch_sphere_window.animate_circuit()
@@ -21,11 +28,26 @@ def visualize():
     # bloch_sphere_window.animate_circuit()
     # bloch_sphere_window.app.exec()
     
-    coprime = 5
-    product_of_primes = 3 * 2
+    # coprime = 5
+    # product_of_primes = 3 * 2
     
-    bloch_sphere_window = QuantumCircuitWindow()
-    shors_algorithm.controlled_mod_mult_gate(product_of_primes, coprime, visualization_window=bloch_sphere_window)
+    # bloch_sphere_window = QuantumCircuitWindow(ignore_entanglement=True)
+    # shors_algorithm.controlled_mod_mult_gate(product_of_primes, 3, visualization_window=bloch_sphere_window)
 
-    bloch_sphere_window.animate_circuit()
-    bloch_sphere_window.app.exec()
+    # bloch_sphere_window.animate_circuit()
+    # bloch_sphere_window.app.exec()
+    
+    # bloch_sphere_window = QuantumCircuitWindow(ignore_entanglement=True)
+    # shors_algorithm.modular_exponentiation(product_of_primes, coprime, visualization_window=bloch_sphere_window)
+
+    # bloch_sphere_window.animate_circuit()
+    # bloch_sphere_window.app.exec()
+    
+    # bloch_sphere_window = QuantumCircuitWindow()
+    # shors_algorithm.qpe_gate(6, visualization_window=bloch_sphere_window)
+
+    # bloch_sphere_window.animate_circuit()
+    # bloch_sphere_window.app.exec()
+    
+        
+    shors_algorithm.visualize_shors()    

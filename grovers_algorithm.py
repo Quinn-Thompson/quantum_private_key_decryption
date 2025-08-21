@@ -165,16 +165,17 @@ def aes_ecnryption(plain_text: List[int], input_key: List[int]):
 def create_quantum_circuit():
     bloch_sphere_window = QuantumCircuitWindow()
     qubit_registers = QubitRegisters(
-        plaintext_qubits = qiskit.QuantumRegister(_PLAINTEXT_QUBITS, name='plaintext_qubits'),
-        key_qubits = qiskit.QuantumRegister(_KEY_QUBITS, name='key_qubits'),
-        flip_qubit = qiskit.QuantumRegister(_FLIP_QUBIT, name='flip_qubits')
+        plaintext_qubits = qiskit.QuantumRegister(_PLAINTEXT_QUBITS, name='Plaintext'),
+        key_qubits = qiskit.QuantumRegister(_KEY_QUBITS, name='Key'),
+        flip_qubit = qiskit.QuantumRegister(_FLIP_QUBIT, name='Flip')
     )
-    classical_output = qiskit.ClassicalRegister(4, "classical_output")
+    classical_output = qiskit.ClassicalRegister(4, "Classical Key Value")
     quantum_circuit = qiskit.QuantumCircuit(
         qubit_registers.plaintext_qubits, 
         qubit_registers.key_qubits, 
         qubit_registers.flip_qubit,
-        classical_output
+        classical_output,
+        name="Grover's Algorithm"
     )
 
     cipher_text = aes_ecnryption(_INPUT_PLAINTEXT, _INPUT_KEY)

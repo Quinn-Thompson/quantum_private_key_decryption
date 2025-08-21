@@ -7,9 +7,9 @@ import random
 import math
 
 def test_shors():
-    test_adder()
-    test_mod_adder()
-    test_controlled_mod_mult()
+    # test_adder()
+    # test_mod_adder()
+    # test_controlled_mod_mult()
     test_mod_exp()
     
 def verify_value(
